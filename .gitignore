@@ -1,6 +1,12 @@
 # Dependencies
 node_modules
 
+# Local exports and browser debug artifacts
+userscripts/*/downloads/
+userscripts/*/tmp/
+userscripts/*/*.har
+userscripts/*/.env
+
 # Yarn
 .pnp.*
 .yarn/*
