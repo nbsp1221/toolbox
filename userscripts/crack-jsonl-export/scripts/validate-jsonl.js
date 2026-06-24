@@ -1,5 +1,15 @@
 const fs = require('node:fs');
 
+const RAW_RECORD_TYPES = new Set([
+  'chat_detail',
+  'story_card',
+  'character_card',
+  'associated_characters',
+  'collected_images_info',
+  'collected_endings_base_info',
+  'messages_page',
+]);
+
 const file = process.argv[2];
 if (!file) {
   console.error('Usage: node validate-jsonl.js <export.jsonl>');
@@ -21,23 +31,31 @@ const counts = records.reduce((acc, record) => {
   return acc;
 }, {});
 
-const apiPages = records.filter((record) => record.type === 'api_page');
+const rawRecords = records.filter((record) => RAW_RECORD_TYPES.has(record.type));
 const messages = records.filter((record) => record.type === 'message');
-const messagesWithoutRaw = messages.filter((record) => !record.raw || typeof record.raw !== 'object');
-const apiPagesWithoutRaw = apiPages.filter((record) => !record.raw || typeof record.raw !== 'object');
+const recordsMissingRaw = [...rawRecords, ...messages].filter(
+  (record) => !record.raw || typeof record.raw !== 'object'
+);
+const cardCount = (counts.story_card || 0) + (counts.character_card || 0);
+const requiredCounts = {
+  export_meta: counts.export_meta || 0,
+  chat_detail: counts.chat_detail || 0,
+  card: cardCount,
+  messages_page: counts.messages_page || 0,
+};
 
 console.log(JSON.stringify({
   file,
   total_records: records.length,
   counts,
-  api_pages_without_raw: apiPagesWithoutRaw.length,
-  messages_without_raw: messagesWithoutRaw.length,
-  first_api_paths: apiPages.slice(0, 5).map((record) => record.path),
+  records_missing_raw: recordsMissingRaw.length,
+  first_raw_paths: rawRecords.slice(0, 8).map((record) => record.path),
+  required_counts: requiredCounts,
 }, null, 2));
 
-if (!counts.export_meta || !counts.api_page) {
+if (Object.values(requiredCounts).some((count) => count < 1)) {
   process.exitCode = 1;
 }
-if (messagesWithoutRaw.length || apiPagesWithoutRaw.length) {
+if (recordsMissingRaw.length) {
   process.exitCode = 1;
 }

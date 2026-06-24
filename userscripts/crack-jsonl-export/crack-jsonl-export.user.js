@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crack JSONL Exporter
 // @namespace    local.crack-jsonl-exporter
-// @version      0.2.1
+// @version      0.3.0
 // @description  Export the current crack.wrtn.ai chat as one JSONL file.
 // @match        https://crack.wrtn.ai/*
 // @run-at       document-idle
@@ -13,9 +13,8 @@
   'use strict';
 
   const API_BASE = 'https://crack-api.wrtn.ai';
-  const CHAT_BASE = `${API_BASE}/crack-gen`;
   const AUTH_REFRESH_URL = `${API_BASE}/auth/v2/token/refresh`;
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
   const DEFAULT_LIMIT = 100;
   const REQUEST_DELAY_MS = 750;
   const CHAT_DELAY_MS = 1200;
@@ -51,8 +50,10 @@
         kind: 'story',
         contentId: storyMatch[1],
         chatId: storyMatch[2],
-        detailPath: `/v3/chats/${encodeURIComponent(storyMatch[2])}`,
-        messagesPath: `/v3/chats/${encodeURIComponent(storyMatch[2])}/messages?sortOrder=asc`,
+        detailPath: `/crack-gen/v3/chats/${encodeURIComponent(storyMatch[2])}`,
+        messagesPath: `/crack-gen/v3/chats/${encodeURIComponent(storyMatch[2])}/messages?sortOrder=asc`,
+        cardPath: `/crack-api/stories/${encodeURIComponent(storyMatch[1])}`,
+        associatedCharactersPath: `/crack-api/stories/${encodeURIComponent(storyMatch[1])}/associated-characters`,
       };
     }
 
@@ -62,8 +63,9 @@
         kind: 'character',
         contentId: characterMatch[1],
         chatId: characterMatch[2],
-        detailPath: `/character-chats/${encodeURIComponent(characterMatch[2])}`,
-        messagesPath: `/character-chats/${encodeURIComponent(characterMatch[2])}/messages?sortOrder=asc`,
+        detailPath: `/crack-gen/character-chats/${encodeURIComponent(characterMatch[2])}`,
+        messagesPath: `/crack-gen/character-chats/${encodeURIComponent(characterMatch[2])}/messages?sortOrder=asc`,
+        cardPath: `/crack-api/characters/${encodeURIComponent(characterMatch[1])}`,
       };
     }
 
@@ -117,6 +119,45 @@
       if (object[key] !== undefined && object[key] !== null) return object[key];
     }
     return undefined;
+  }
+
+  function unwrapApiData(raw) {
+    if (!raw || typeof raw !== 'object') return raw;
+    if (raw.data !== undefined) return raw.data;
+    return raw;
+  }
+
+  function getStorySnapshotId(detailRaw, cardRaw) {
+    const detail = unwrapApiData(detailRaw);
+    const card = unwrapApiData(cardRaw);
+    return detail?.story?.snapshotId || card?.snapshotId || null;
+  }
+
+  function getCharacterSnapshotId(detailRaw) {
+    return unwrapApiData(detailRaw)?.character?.snapshotId || null;
+  }
+
+  function makeRawRecord(type, context, path, raw) {
+    return {
+      type,
+      chat_kind: context.kind,
+      content_id: context.contentId,
+      chat_id: context.chatId,
+      path,
+      raw,
+    };
+  }
+
+  function getProgressLabel(progress) {
+    const labels = {
+      detail: '대화 정보를 확인하는 중',
+      card: '카드 정보를 확인하는 중',
+      associated_characters: '연결 캐릭터 정보를 확인하는 중',
+      collected_images_info: '이미지 메타데이터 확인 중',
+      collected_endings_base_info: '엔딩 메타데이터 확인 중',
+    };
+    if (progress.phase === 'messages') return `메시지 페이지 ${progress.pageIndex} 수집 중`;
+    return labels[progress.phase] || 'Exporting...';
   }
 
   function getMessageId(message) {
@@ -244,7 +285,7 @@
     if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
     if (refreshToken) headers.Refresh = refreshToken;
 
-    const url = `${CHAT_BASE}${path}`;
+    const url = `${API_BASE}${path}`;
     let response;
     try {
       response = await fetch(url, {
@@ -301,7 +342,7 @@
         source: 'crack.wrtn.ai',
         exported_at: new Date().toISOString(),
         page_url: location.href,
-        api_base: CHAT_BASE,
+        api_base: API_BASE,
         chat_kind: context.kind,
         content_id: context.contentId,
         chat_id: context.chatId,
@@ -311,16 +352,67 @@
 
     onProgress({ phase: 'detail' });
     const detailRaw = await requestJson(context.detailPath);
-    records.push({
-      type: 'api_page',
-      api_kind: `${context.kind}.detail`,
-      chat_kind: context.kind,
-      content_id: context.contentId,
-      chat_id: context.chatId,
-      path: context.detailPath,
-      page_index: 0,
-      raw: detailRaw,
-    });
+    records.push(makeRawRecord('chat_detail', context, context.detailPath, detailRaw));
+    await sleep(REQUEST_DELAY_MS);
+
+    onProgress({ phase: 'card' });
+    const cardRaw = await requestJson(context.cardPath);
+    const cardType = context.kind === 'story' ? 'story_card' : 'character_card';
+    records.push(makeRawRecord(cardType, context, context.cardPath, cardRaw));
+    await sleep(REQUEST_DELAY_MS);
+
+    if (context.kind === 'story') {
+      onProgress({ phase: 'associated_characters' });
+      const associatedCharactersRaw = await requestJson(context.associatedCharactersPath);
+      records.push(makeRawRecord(
+        'associated_characters',
+        context,
+        context.associatedCharactersPath,
+        associatedCharactersRaw
+      ));
+      await sleep(REQUEST_DELAY_MS);
+
+      const snapshotId = getStorySnapshotId(detailRaw, cardRaw);
+      if (snapshotId) {
+        const collectedImagesInfoPath = `/crack-api/collected-images/story-snapshots/${encodeURIComponent(snapshotId)}/info`;
+        onProgress({ phase: 'collected_images_info' });
+        const collectedImagesInfoRaw = await requestJson(collectedImagesInfoPath);
+        records.push(makeRawRecord(
+          'collected_images_info',
+          context,
+          collectedImagesInfoPath,
+          collectedImagesInfoRaw
+        ));
+        await sleep(REQUEST_DELAY_MS);
+
+        const collectedEndingsBaseInfoPath = `/crack-api/collected-endings/story-snapshots/${encodeURIComponent(snapshotId)}/base-info`;
+        onProgress({ phase: 'collected_endings_base_info' });
+        const collectedEndingsBaseInfoRaw = await requestJson(collectedEndingsBaseInfoPath);
+        records.push(makeRawRecord(
+          'collected_endings_base_info',
+          context,
+          collectedEndingsBaseInfoPath,
+          collectedEndingsBaseInfoRaw
+        ));
+        await sleep(REQUEST_DELAY_MS);
+      }
+    }
+
+    if (context.kind === 'character') {
+      const snapshotId = getCharacterSnapshotId(detailRaw);
+      if (snapshotId) {
+        const collectedImagesInfoPath = `/crack-api/collected-images/character-snapshots/${encodeURIComponent(snapshotId)}/info`;
+        onProgress({ phase: 'collected_images_info' });
+        const collectedImagesInfoRaw = await requestJson(collectedImagesInfoPath);
+        records.push(makeRawRecord(
+          'collected_images_info',
+          context,
+          collectedImagesInfoPath,
+          collectedImagesInfoRaw
+        ));
+        await sleep(REQUEST_DELAY_MS);
+      }
+    }
 
     await sleep(CHAT_DELAY_MS);
     const messagePages = await collectCursorPages(context.messagesPath, DEFAULT_LIMIT, onProgress);
@@ -328,8 +420,7 @@
 
     for (const page of messagePages) {
       records.push({
-        type: 'api_page',
-        api_kind: `${context.kind}.messages`,
+        type: 'messages_page',
         chat_kind: context.kind,
         content_id: context.contentId,
         chat_id: context.chatId,
@@ -350,10 +441,15 @@
       content_id: context.contentId,
       chat_id: context.chatId,
       message_count: messageIndex,
-      api_page_count: messagePages.length + 1,
+      raw_record_count: records.filter((record) => record.raw).length,
+      message_page_count: messagePages.length,
     });
 
-    return { records, messageCount: messageIndex, apiPageCount: messagePages.length + 1 };
+    return {
+      records,
+      messageCount: messageIndex,
+      rawRecordCount: records.filter((record) => record.raw).length,
+    };
   }
 
   function downloadText(filename, text) {
@@ -446,16 +542,12 @@
 
       try {
         const result = await exportCurrentChat(latestContext, title, (progress) => {
-          if (progress.phase === 'detail') {
-            setStatus(root, '대화 정보를 확인하는 중');
-            return;
-          }
-          setStatus(root, `메시지 페이지 ${progress.pageIndex} 수집 중`);
+          setStatus(root, getProgressLabel(progress));
         });
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const filename = `${sanitizeFilePart(`crack-${latestContext.kind}-${title}-${stamp}`)}.jsonl`;
         downloadText(filename, jsonl(result.records));
-        setStatus(root, `완료: messages ${result.messageCount}, raw pages ${result.apiPageCount}`);
+        setStatus(root, `완료: messages ${result.messageCount}, raw records ${result.rawRecordCount}`);
       }
       catch (error) {
         console.error('[Crack JSONL Exporter]', error);

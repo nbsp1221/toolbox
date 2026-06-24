@@ -126,3 +126,31 @@ test('userscript uses API-accepted lowercase message sort order', () => {
   assert.doesNotMatch(script, /sortOrder=ASC/);
   assert.match(script, /messages\?sortOrder=asc/);
 });
+
+test('userscript preserves story card metadata without community data', () => {
+  const script = fs.readFileSync(
+    path.join(__dirname, '..', 'crack-jsonl-export.user.js'),
+    'utf8'
+  );
+
+  assert.match(script, /'story_card'/);
+  assert.match(script, /cardPath:\s*`\/crack-api\/stories\/\$\{encodeURIComponent\(storyMatch\[1\]\)\}`/);
+  assert.match(script, /associatedCharactersPath/);
+  assert.match(script, /collectedImagesInfoPath/);
+  assert.match(script, /collectedEndingsBaseInfoPath/);
+  assert.doesNotMatch(script, /comments\?limit/);
+  assert.doesNotMatch(script, /shortcut-commands/);
+});
+
+test('userscript preserves character card metadata without image binaries', () => {
+  const script = fs.readFileSync(
+    path.join(__dirname, '..', 'crack-jsonl-export.user.js'),
+    'utf8'
+  );
+
+  assert.match(script, /'character_card'/);
+  assert.match(script, /cardPath:\s*`\/crack-api\/characters\/\$\{encodeURIComponent\(characterMatch\[1\]\)\}`/);
+  assert.match(script, /\/collected-images\/character-snapshots\//);
+  assert.doesNotMatch(script, /character-starting-sets/);
+  assert.doesNotMatch(script, /base64/);
+});
